@@ -1,0 +1,259 @@
+AWSTemplateFormatVersion: 2010-09-09
+Metadata:
+  'AWS::CloudFormation::Designer':
+    2894f0e7-d848-4d04-9973-34c58e3acc1c:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 60
+        'y': 240
+      z: 1
+      embeds: []
+    03fa2d40-94c5-43dd-9230-8a70725b82d0:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 30
+        'y': 300
+      z: 1
+      embeds: []
+    8bb0b2eb-4bf9-4385-947b-87babbdd3d62:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 30
+        'y': 180
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - 2894f0e7-d848-4d04-9973-34c58e3acc1c
+    f6661676-c593-49d8-a628-cb3080d2bb21:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 150
+        'y': 240
+      z: 1
+      embeds: []
+    ad26eda1-d14c-4056-9c75-5ad71a073cc3:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 270
+        'y': 240
+      z: 1
+      embeds: []
+    f12f5f6f-e24b-4e37-8d4d-668690bdbf31:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 90
+        'y': 120
+      z: 1
+      embeds: []
+    919134cf-1973-4e34-b867-09956476c55b:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 300
+        'y': 120
+      z: 1
+      embeds: []
+    097535cf-4d30-43dd-b0d9-a68564e3a54a:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 180
+        'y': 90
+      z: 1
+      embeds: []
+    6a5a2b68-c9be-46a6-8533-576dca8c0a5b:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: -278.4816416158958
+        'y': 148.55321632129437
+      z: 0
+      embeds: []
+Parameters:
+  SourceConnectionArn:
+    Type: String
+    Description: CodeStar connection ARN
+  SiteBranchName:
+    Type: String
+    Description: Branch containing the site content
+  SiteRepoId:
+    Type: String
+    Description: Repo Id containing the site
+Outputs:
+  CfUrl:
+    Description: Cloudfront URL
+    Value: !GetAtt CfDistribution.DomainName
+Resources:
+  StaticSite:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 2894f0e7-d848-4d04-9973-34c58e3acc1c
+  CfAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref StaticSite
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 03fa2d40-94c5-43dd-9230-8a70725b82d0
+  CfReadPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref StaticSite
+      PolicyDocument:
+        Statement:
+          - Action: 's3:GetObject'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:s3:::${StaticSite}/*'
+            Principal:
+              CanonicalUser: !GetAtt CfAccessIdentity.S3CanonicalUserId
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 8bb0b2eb-4bf9-4385-947b-87babbdd3d62
+  CfDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: http2
+        Origins:
+          - DomainName: !GetAtt StaticSite.DomainName
+            Id: s3origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CfAccessIdentity}'
+        PriceClass: PriceClass_All
+        DefaultCacheBehavior:
+          TargetOriginId: s3origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: !Ref CfCachePolicy
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: f6661676-c593-49d8-a628-cb3080d2bb21
+  CfCachePolicy:
+    Type: 'AWS::CloudFront::CachePolicy'
+    Properties:
+      CachePolicyConfig:
+        DefaultTTL: 3600
+        MaxTTL: 86400
+        MinTTL: 3600
+        Name: DefaultCachePolicy
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: all
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+          EnableAcceptEncodingGzip: true
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: ad26eda1-d14c-4056-9c75-5ad71a073cc3
+  BuildBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+        PublicAccessBlockConfiguration:
+            RestrictPublicBuckets: true
+            BlockPublicAcls: true
+            BlockPublicPolicy: true
+            IgnorePublicAcls: true
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: f12f5f6f-e24b-4e37-8d4d-668690bdbf31
+  SiteDeployRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref SiteDeployPolicy
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 919134cf-1973-4e34-b867-09956476c55b
+  SiteDeployPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt SiteDeployRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref BuildBucket
+      Stages:
+        - Name: SourceStage
+          Actions:
+            - Name: SiteSource
+              ActionTypeId:
+                Version: '1'
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+              Configuration:
+                ConnectionArn: !Ref SourceConnectionArn
+                FullRepositoryId: !Ref SiteRepoId
+                BranchName: !Ref SiteBranchName
+              OutputArtifacts:
+                - Name: SiteSource
+        - Name: DeployStage
+          Actions:
+            - Name: SiteDeploy
+              ActionTypeId:
+                Version: '1'
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+              Configuration:
+                BucketName: !Ref StaticSite
+                Extract: true
+              InputArtifacts:
+                - Name: SiteSource
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 097535cf-4d30-43dd-b0d9-a68564e3a54a
+  SiteDeployPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'codestar-connections:UseConnection'
+            Resource:
+              - !Ref SourceConnectionArn
+          - Effect: Allow
+            Action:
+              - 's3:*'
+            Resource: !Join ['/', [ !GetAtt BuildBucket.Arn, '*' ] ]
+          - Effect: Allow
+            Action:
+              - 's3:PutObject'
+            Resource: !Join ['/', [ !GetAtt StaticSite.Arn, '*' ] ]
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 6a5a2b68-c9be-46a6-8533-576dca8c0a5b

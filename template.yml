@@ -488,8 +488,8 @@ Resources:
       GroupDescription: Security group for EC2 instances
       VpcId: !Ref appVpc
       SecurityGroupIngress:
-        - FromPort: 80
-          ToPort: 80
+        - FromPort: 443
+          ToPort: 443
           IpProtocol: tcp
           SourceSecurityGroupId: !Ref ALBSecurityGroup
         - FromPort: 22
@@ -505,6 +505,7 @@ Resources:
       KeyName: !Ref KeyName
       ImageId: ami-0c2b8ca1dad447f8a
       InstanceType: t2.micro
+      IamInstanceProfile: !Ref AsgInstanceProfile
       AssociatePublicIpAddress: true
       SecurityGroups:
         - !Ref EC2SecurityGroup
@@ -524,6 +525,7 @@ Resources:
           packages:
             yum: 
               nginx: []
+              jq: []
           files:
             /etc/cfn/cfn-hup.conf:
               content: !Join [ '',[
@@ -545,6 +547,29 @@ Resources:
                 ' --region ', !Ref AWS::Region, "\n",
                 "runas=root\n"
               ]]
+            /etc/nginx/conf.d/https.conf:
+              content: '
+  server {
+    listen       443 ssl http2;
+    listen       [::]:443 ssl http2;
+    server_name  _;
+    root         /usr/share/nginx/html;
+
+    ssl_certificate "/etc/pki/nginx/server.crt";
+    ssl_certificate_key "/etc/pki/nginx/private/server.key";
+    ssl_session_cache shared:SSL:1m;
+    ssl_session_timeout  10m;
+
+    include /etc/nginx/default.d/*.conf;
+
+    error_page 404 /404.html;
+        location = /40x.html {
+    }
+    error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+    }
+  }
+  '
           services:
             sysvinit:
               nginx:
@@ -552,6 +577,7 @@ Resources:
                 ensureRunning: true
                 files:
                   - /etc/nginx/nginx.conf
+                  - /etc/nginx/conf.d/https.conf
                 sources:
                   - /var/www/html
               cfn-hup:
@@ -572,14 +598,41 @@ Resources:
               ] ]
             ] ]
           commands:
-            web-root:
-              command: !Join [ '', [
-                'mount --bind /var/www/html/',
-                !Ref GitSiteRepo,
-                '-',
-                !Ref GitSiteBranch,
-                ' /usr/share/nginx/html'
-                ] ]
+            01-set-region:
+              command: /usr/bin/aws configure set region $REGION
+              env:
+                REGION: !Ref AWS::Region
+            02-mk-cert-dir:
+              command: /usr/bin/mkdir -p /etc/pki/nginx/private
+            03-gen-cert:
+              command: /usr/bin/openssl req -nodes -new -newkey rsa:4096 -keyout ${CERT_PATH}private/server.key -out ${CERT_PATH}server.crt -subj "/CN=${HOSTNAME}"
+              env:
+                  CERT_PATH: /etc/pki/nginx/
+            04-sign-cert:
+              command: aws acm-pca issue-certificate --certificate-authority-arn $ROOTCA --csr file://${CERT_PATH}server.crt --signing-algorithm "SHA512WITHRSA" --validity Type=DAYS,Value=365 --output text > ${ARN_FILE}
+              env:
+                  CERT_PATH: /etc/pki/nginx/
+                  ROOTCA: !Ref RootInternalCA
+                  ARN_FILE: /tmp/cert.arn
+            05-web-root:
+              command: mount --bind /var/www/html/${REPO}-${BRANCH} /usr/share/nginx/html
+              env:
+                REPO: !Ref GitSiteRepo
+                BRANCH: !Ref GitSiteBranch
+            06-sleep:
+              command: /usr/bin/sleep 1
+            07-update-cert:
+              command: aws acm-pca get-certificate --certificate-authority-arn $ROOTCA --certificate-arn $(cat ${ARN_FILE}) --output json | jq -r '.Certificate' > ${CERT_PATH}server.crt
+              env:
+                  CERT_PATH: /etc/pki/nginx/
+                  ROOTCA: !Ref RootInternalCA
+                  ARN_FILE: /tmp/cert.arn
+            08-update-cert-chain:
+              command: aws acm-pca get-certificate --certificate-authority-arn $ROOTCA --certificate-arn $(cat ${ARN_FILE}) --output json | jq -r '.CertificateChain' >> ${CERT_PATH}server.crt
+              env:
+                  CERT_PATH: /etc/pki/nginx/
+                  ROOTCA: !Ref RootInternalCA
+                  ARN_FILE: /tmp/cert.arn
       'AWS::CloudFormation::Designer':
         id: 4f982535-a058-46c3-b74e-e4cf8bc347b8
   WebAppASG:
@@ -601,8 +654,8 @@ Resources:
     Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
     Properties:
       VpcId: !Ref appVpc
-      Port: 80
-      Protocol: HTTP
+      Port: 443
+      Protocol: HTTPS
     Metadata:
       'AWS::CloudFormation::Designer':
         id: 95ebe014-41d8-4e9a-998b-e01b1b805798
@@ -706,6 +759,63 @@ Resources:
     Metadata:
       'AWS::CloudFormation::Designer':
         id: dfd6c59c-2a9c-4759-a803-27b12a01b8bc
+  RootCAActivation:
+    Type: 'AWS::ACMPCA::CertificateAuthorityActivation'
+    Properties:
+      CertificateAuthorityArn: !Ref RootInternalCA
+      Certificate: !GetAtt RootInternalCert.Certificate
+      Status: ACTIVE
+  RootInternalCA:
+    Type: AWS::ACMPCA::CertificateAuthority
+    Properties:
+      KeyAlgorithm: RSA_4096
+      SigningAlgorithm: SHA512WITHRSA
+      Subject:
+        CommonName: ec2.internal
+      Type: ROOT
+  RootInternalCert:
+    Type: AWS::ACMPCA::Certificate
+    Properties:
+      CertificateAuthorityArn: !Ref RootInternalCA
+      CertificateSigningRequest: !GetAtt RootInternalCA.CertificateSigningRequest
+      SigningAlgorithm: SHA512WITHRSA
+      TemplateArn: 'arn:aws:acm-pca:::template/RootCACertificate/V1'
+      Validity:
+        Type: YEARS
+        Value: 10
+  AsgInstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref AsgInstancePolicy
+  AsgInstancePolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - acm-pca:IssueCertificate
+              - acm-pca:GetCertificate
+              - acm-pca:GetCertificateAuthorityCsr
+              - acm-pca:GetCertificateAuthorityCertificate
+            Resource:
+              - !Ref RootInternalCA
+  AsgInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !Ref AsgInstanceRole
 Outputs:
   LbUrl:
     Description: Load Balancer URL

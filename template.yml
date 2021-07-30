@@ -94,6 +94,12 @@ Parameters:
   SiteRepoId:
     Type: String
     Description: Repo Id containing the site
+  SiteFQDN:
+    Type: String
+    Description: FQDN for the site LB
+  HostedZoneId:
+    Type: String
+    Description: hosted zone id site
 Outputs:
   CfUrl:
     Description: Cloudfront URL
@@ -134,6 +140,8 @@ Resources:
     Type: 'AWS::CloudFront::Distribution'
     Properties:
       DistributionConfig:
+        Aliases:
+          - !Ref SiteFQDN
         DefaultRootObject: index.html
         Enabled: true
         HttpVersion: http2
@@ -147,6 +155,10 @@ Resources:
           TargetOriginId: s3origin
           ViewerProtocolPolicy: redirect-to-https
           CachePolicyId: !Ref CfCachePolicy
+        ViewerCertificate:
+          AcmCertificateArn: !Ref SiteHttpsCertificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2018
     Metadata:
       'AWS::CloudFormation::Designer':
         id: f6661676-c593-49d8-a628-cb3080d2bb21
@@ -257,3 +269,25 @@ Resources:
     Metadata:
       'AWS::CloudFormation::Designer':
         id: 6a5a2b68-c9be-46a6-8533-576dca8c0a5b
+  SiteHttpsCertificate:
+    Type: 'AWS::CertificateManager::Certificate'
+    Properties:
+      DomainName: !Ref SiteFQDN
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - HostedZoneId: !Ref HostedZoneId
+          DomainName: !Ref SiteFQDN
+  SiteDns:
+    Type: 'AWS::Route53::RecordSetGroup'
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Comment: Site DNS Records
+      RecordSets:
+        - Name: !Join 
+            - ''
+            - - !Ref SiteFQDN
+              - .
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt CfDistribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2
